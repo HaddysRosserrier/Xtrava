@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}{{ group }} · Activity Check · Xtrava{% endblock %}
+
+{% macro athlete_cell(a) %}
+  {% if a.athlete_url %}
+    <td><a href="{{ a.athlete_url }}" target="_blank" rel="noopener"
+           title="Open {{ a.name }}'s Strava profile to verify their activities">{{ a.name }}</a></td>
+  {% else %}
+    <td>{{ a.name }}</td>
+  {% endif %}
+{% endmacro %}
+
+{% block content %}
+  <div class="page-head">
+    <a class="back-link" href="{{ url_for('activities', week=week) }}">← Activities</a>
+    <h1>{{ group }}</h1>
+    {% if week %}<span class="week-pill">Week of {{ week }}</span>{% endif %}
+  </div>
+
+  <section class="card">
+    <h2>Missing Activities <span class="muted">· logged on Strava, not yet extracted</span></h2>
+    {% if missing %}
+      <p class="muted lead">
+        {{ missing|length }} athlete{{ '' if missing|length == 1 else 's' }} in
+        <strong>{{ group }}</strong> logged more activities than we extracted this week.
+      </p>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>Athlete</th><th>Logged</th><th>Extracted</th><th>Missing</th><th></th></tr>
+          </thead>
+          <tbody>
+            {% for a in missing %}
+              <tr>
+                {{ athlete_cell(a) }}
+                <td>{{ a.expected }}</td>
+                <td>{{ a.extracted }}</td>
+                <td><span class="cov-miss">{{ a.diff }}</span></td>
+                <td class="backfill-cell">
+                  {% if a.athlete_url %}
+                    <button type="button" class="backfill-btn" data-url="{{ a.athlete_url }}"
+                            data-name="{{ a.name }}"
+                            title="Scrape {{ a.name }}'s public profile and add any activities missing from this week">
+                      <span class="bf-icon">⤓</span> Backfill
+                    </button>
+                  {% else %}
+                    <span class="muted" title="No profile link — re-scrape the leaderboard to capture it">—</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <script>
+        // Backfill one athlete: scrape their public profile and add any
+        // activities this week's club-feed scrape missed, then reload.
+        document.querySelectorAll('.backfill-btn').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            btn.disabled = true;
+            btn.classList.add('is-busy');
+            fetch('{{ url_for("backfill_athlete") }}', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                athlete_url: btn.dataset.url,
+                week: '{{ week or "" }}'
+              })
+            }).then(function (r) {
+              return r.json().then(function (body) {
+                if (!r.ok || !body.ok) { throw new Error(body.error || 'backfill failed'); }
+                if (body.added > 0) {
+                  location.reload();
+                } else {
+                  alert('No new public activities found for ' + btn.dataset.name +
+                        ' this week. Their activities may be private, or already captured.');
+                  btn.disabled = false;
+                  btn.classList.remove('is-busy');
+                }
+              });
+            }).catch(function (err) {
+              alert('Could not backfill ' + btn.dataset.name + ' — ' + err.message);
+              btn.disabled = false;
+              btn.classList.remove('is-busy');
+            });
+          });
+        });
+      </script>
+    {% else %}
+      <p class="empty">No missing activities — every athlete in {{ group }} is fully accounted for.</p>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Extra Activities <span class="muted">· extracted beyond the logged total</span></h2>
+    {% if extra %}
+      <p class="muted lead">
+        {{ extra|length }} athlete{{ '' if extra|length == 1 else 's' }} in
+        <strong>{{ group }}</strong> have more extracted activities than the leaderboard logged —
+        possible duplicates, or athletes not on the leaderboard.
+      </p>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>Athlete</th><th>Logged</th><th>Extracted</th><th>Extra</th></tr>
+          </thead>
+          <tbody>
+            {% for a in extra %}
+              <tr>
+                {{ athlete_cell(a) }}
+                <td>{{ a.expected }}</td>
+                <td>{{ a.extracted }}</td>
+                <td><span class="cov-over">+{{ a.diff }}</span></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="empty">No extra activities for {{ group }}.</p>
+    {% endif %}
+  </section>
+{% endblock %}

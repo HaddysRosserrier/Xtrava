@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+{% block title %}Activities · Xtrava{% endblock %}
+
+{% block content %}
+  <div class="page-head">
+    <h1>Activities</h1>
+    {% if weeks and weeks|length > 1 %}
+      <form method="get" class="week-picker">
+        <label for="week">Week</label>
+        <select id="week" name="week" onchange="this.form.submit()">
+          {% for w in weeks %}
+            <option value="{{ w }}" {{ 'selected' if w == week else '' }}>Week of {{ w }}</option>
+          {% endfor %}
+        </select>
+        <noscript><button type="submit">Go</button></noscript>
+      </form>
+    {% elif week %}
+      <span class="week-pill">Week of {{ week }}</span>
+    {% endif %}
+  </div>
+
+  {% if not week %}
+    <p class="empty">No activity data found. Run <code>python main.py activities</code> first.</p>
+  {% else %}
+    {% if coverage %}
+      <section class="card">
+        <h2>Weekly Coverage <span class="muted">· activity log</span></h2>
+        <div class="coverage">
+          {% for c in coverage %}
+            <a class="cov-row" href="{{ url_for('coverage_detail', group=c.group, week=week) }}"
+               title="See which athletes are missing activities in {{ c.group }}">
+              <div class="cov-name">{{ c.group }}</div>
+              <div class="cov-bar"><span class="{{ 'full' if c.diff >= 0 else '' }}" style="width: {{ c.pct }}%"></span></div>
+              <div class="cov-stat">
+                <span class="cov-count">{{ c.extracted }}<span class="muted"> / {{ c.expected }}</span></span>
+                {% if c.diff < 0 %}
+                  <span class="cov-miss">{{ c.diff }}</span>
+                {% elif c.diff > 0 %}
+                  <span class="cov-over">+{{ c.diff }}</span>
+                {% else %}
+                  <span class="cov-ok">complete</span>
+                {% endif %}
+              </div>
+            </a>
+          {% endfor %}
+        </div>
+      </section>
+    {% endif %}
+
+    <form method="get" class="day-picker">
+      {% if week %}<input type="hidden" name="week" value="{{ week }}">{% endif %}
+      <label for="day">Day</label>
+      <select id="day" name="day" onchange="this.form.submit()">
+        {% for d in days %}
+          <option value="{{ d }}" {{ 'selected' if d == day else '' }}>{{ d }}</option>
+        {% endfor %}
+      </select>
+      <noscript><button type="submit">Show</button></noscript>
+    </form>
+
+    {% if groups %}
+      <div class="tabs" role="tablist">
+        {% for grp in groups %}
+          <button type="button" class="tab tab--{{ grp.name|lower|replace(' ', '-') }} {{ 'active' if loop.first else '' }}"
+                  role="tab" data-target="group-{{ loop.index }}">
+            {{ grp.name }} <span class="count">{{ grp.rows|length }}</span>
+          </button>
+        {% endfor %}
+      </div>
+
+      {% for grp in groups %}
+        <section class="card group-panel {{ 'hidden' if not loop.first else '' }}" id="group-{{ loop.index }}">
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>{% for c in columns %}<th>{{ headers.get(c, c.replace('_', ' ').title()) }}</th>{% endfor %}</tr>
+              </thead>
+              <tbody>
+                {% for row in grp.rows %}
+                  <tr>
+                    {% for c in columns %}
+                      {% if c == 'audit' %}
+                        <td class="audit">
+                          <input type="checkbox" class="audit-box"
+                                 data-url="{{ row['activity_url'] }}"
+                                 {{ 'checked' if row[c] else '' }}
+                                 {{ 'disabled' if not row['activity_url'] else '' }}
+                                 aria-label="Mark activity as verified">
+                        </td>
+                      {% elif c == 'valid' %}
+                        {% set label = {'green': 'Valid', 'yellow': 'Grey area', 'red': 'Flagged'}[row[c]] %}
+                        <td class="signal">
+                          {% if row['activity_url'] %}
+                            <a href="{{ row['activity_url'] }}" target="_blank" rel="noopener"
+                               title="{{ label }} — open activity"><span class="dot {{ row[c] }}"></span></a>
+                          {% else %}
+                            <span class="dot {{ row[c] }}" title="{{ label }}"></span>
+                          {% endif %}
+                        </td>
+                      {% elif c == 'auto_audit' %}
+                        <td class="auto-audit-cell">
+                          {% if row['activity_url'] %}
+                            <button type="button" class="aa-btn {{ verdict_dot.get(row[c], 'grey') }}"
+                                    data-url="{{ row['activity_url'] }}"
+                                    aria-label="Auto audit{{ ' — ' ~ row[c] if row[c] else ' — not audited' }}"
+                                    title="{% if row[c] %}{{ row[c] }}{% if row['auto_audit_details'] %} — {{ row['auto_audit_details'] }}{% endif %} · click to Re-audit (opens a browser, ~10s){% else %}Not audited · click to Auto Audit (opens a browser, ~10s){% endif %}">
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/>
+                                <path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>
+                              </svg>
+                            </button>
+                          {% endif %}
+                        </td>
+                      {% elif c == 'update' %}
+                        <td class="update-cell">
+                          {% if row['activity_url'] %}
+                            <button type="button" class="update-btn" data-url="{{ row['activity_url'] }}"
+                                    title="Re-fetch this activity from Strava">↻</button>
+                          {% endif %}
+                        </td>
+                      {% elif c == 'update_date' %}
+                        <td class="muted update-date">{{ row[c]|replace('T', ' ') }}</td>
+                      {% elif row[c] is boolean %}
+                        <td class="{{ 'yes' if row[c] else 'no' }}">{{ '✓' if row[c] else '–' }}</td>
+                      {% else %}
+                        <td>{{ row[c] }}</td>
+                      {% endif %}
+                    {% endfor %}
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      {% endfor %}
+
+      <script>
+        function activateTab(target) {
+          var tab = document.querySelector('.tab[data-target="' + target + '"]');
+          var panel = document.getElementById(target);
+          if (!tab || !panel) { return; }
+          document.querySelectorAll('.tab').forEach(function (t) { t.classList.remove('active'); });
+          document.querySelectorAll('.group-panel').forEach(function (p) { p.classList.add('hidden'); });
+          tab.classList.add('active');
+          panel.classList.remove('hidden');
+        }
+
+        document.querySelectorAll('.tab').forEach(function (tab) {
+          tab.addEventListener('click', function () {
+            activateTab(tab.dataset.target);
+            // Remember the open group so a reload (e.g. after Update) keeps it.
+            history.replaceState(null, '', '#' + tab.dataset.target);
+          });
+        });
+        if (location.hash) { activateTab(location.hash.slice(1)); }
+
+        // Re-fetch a single activity from its URL, then reload to show fresh data.
+        document.querySelectorAll('.update-btn').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            btn.disabled = true;
+            btn.classList.add('spinning');
+            fetch('{{ url_for("update_activity") }}', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ activity_url: btn.dataset.url })
+            }).then(function (r) {
+              return r.json().then(function (body) {
+                if (!r.ok || !body.ok) { throw new Error(body.error || 'update failed'); }
+                location.reload();
+              });
+            }).catch(function (err) {
+              alert('Could not update activity — ' + err.message);
+              btn.disabled = false;
+              btn.classList.remove('spinning');
+            });
+          });
+        });
+
+        // Auto Audit: scrape + run the integrity rules for one activity, then
+        // recolor the bot icon to the verdict in place (no reload needed).
+        var AA_COLORS = { FLAGGED: 'red', REVIEW: 'yellow', MINOR: 'yellow', CLEAN: 'green' };
+        document.querySelectorAll('.aa-btn').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            btn.disabled = true;
+            btn.classList.add('scanning');
+            fetch('{{ url_for("auto_audit") }}', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ activity_url: btn.dataset.url })
+            }).then(function (r) {
+              return r.json().then(function (body) {
+                if (!r.ok || !body.ok) { throw new Error(body.error || 'audit failed'); }
+                var color = AA_COLORS[body.verdict] || 'grey';
+                btn.classList.remove('grey', 'red', 'yellow', 'green');
+                btn.classList.add(color);
+                btn.title = body.verdict + (body.details ? ' — ' + body.details : '') +
+                            ' · click to Re-audit (opens a browser, ~10s)';
+                btn.setAttribute('aria-label', 'Auto audit — ' + body.verdict);
+              });
+            }).catch(function (err) {
+              alert('Could not audit activity — ' + err.message);
+            }).finally(function () {
+              btn.disabled = false;
+              btn.classList.remove('scanning');
+            });
+          });
+        });
+
+        // Persist auditor "Verified" ticks to the audit workbook, keyed by URL.
+        document.querySelectorAll('.audit-box').forEach(function (box) {
+          box.addEventListener('change', function () {
+            box.disabled = true;
+            fetch('{{ url_for("audit") }}', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ activity_url: box.dataset.url, verified: box.checked })
+            }).then(function (r) {
+              if (!r.ok) { throw new Error('save failed'); }
+            }).catch(function () {
+              box.checked = !box.checked;  // revert on failure
+              alert('Could not save verification — please try again.');
+            }).finally(function () {
+              box.disabled = false;
+            });
+          });
+        });
+      </script>
+    {% else %}<p class="empty">No activities for this day.</p>{% endif %}
+  {% endif %}
+{% endblock %}

@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · Xtrava{% endblock %}
+
+{% macro rank_cell(value) %}
+  {% set medals = {1: '🥇', 2: '🥈', 3: '🥉'} %}
+  <td class="rank-cell">
+    {% if value in medals %}<span class="medal">{{ medals[value] }}</span>{% else %}{{ value }}{% endif %}
+  </td>
+{% endmacro %}
+
+{% block content %}
+  <div class="page-head">
+    <h1>Leaderboard</h1>
+    {% if weeks and weeks|length > 1 %}
+      <form method="get" class="week-picker">
+        <label for="week">Week</label>
+        <select id="week" name="week" onchange="this.form.submit()">
+          {% for w in weeks %}
+            <option value="{{ w }}" {{ 'selected' if w == week else '' }}>Week of {{ w }}</option>
+          {% endfor %}
+        </select>
+        <noscript><button type="submit">Go</button></noscript>
+      </form>
+    {% elif week %}
+      <span class="week-pill">Week of {{ week }}</span>
+    {% endif %}
+    <button type="button" class="refresh-btn" id="refresh-btn"
+            title="Re-scrape this week's leaderboard from Strava (opens a browser, ~30s)">
+      <span class="refresh-icon">↻</span> Refresh
+    </button>
+  </div>
+
+  <script>
+    // Re-run the weekly leaderboard scrape, then reload to show fresh standings.
+    (function () {
+      var btn = document.getElementById('refresh-btn');
+      if (!btn) { return; }
+      btn.addEventListener('click', function () {
+        btn.disabled = true;
+        btn.classList.add('is-busy');
+        fetch('{{ url_for("refresh_leaderboard") }}', { method: 'POST' })
+          .then(function (r) {
+            return r.json().then(function (body) {
+              if (!r.ok || !body.ok) { throw new Error(body.error || 'refresh failed'); }
+              // Refresh scrapes the current week — land on it (latest), not the
+              // week that may currently be selected in the picker.
+              window.location.href = '{{ url_for("dashboard") }}';
+            });
+          }).catch(function (err) {
+            alert('Could not refresh leaderboard — ' + err.message);
+            btn.disabled = false;
+            btn.classList.remove('is-busy');
+          });
+      });
+    })();
+  </script>
+
+  {% if not week %}
+    <p class="empty">No leaderboard data found. Run <code>python main.py leaderboard</code> first.</p>
+  {% else %}
+    {% if kpis %}
+      <div class="kpi-grid">
+        {% for k in kpis %}
+          <div class="kpi">
+            <div class="kpi-label">{{ k.label }}</div>
+            <div class="kpi-value">{{ k.value }}{% if k.unit %}<span class="kpi-unit">{{ k.unit }}</span>{% endif %}</div>
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    <section class="card">
+      <h2>Team Standings</h2>
+      {% if teams %}
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>{% for c in team_cols %}<th>{{ team_headers.get(c, c.replace('_', ' ').title()) }}</th>{% endfor %}</tr>
+            </thead>
+            <tbody>
+              {% for row in teams %}
+                <tr class="{{ 'rank-' ~ row['rank'] if 'rank' in row else '' }}">
+                  {% for c in team_cols %}
+                    {% if c == 'rank' %}{{ rank_cell(row[c]) }}
+                    {% else %}<td class="{{ 'leader' if c in row['_leaders'] else '' }}">{{ row[c] }}</td>{% endif %}
+                  {% endfor %}
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}<p class="empty">No team data.</p>{% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Athletes</h2>
+      {% if athletes %}
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>{% for c in athlete_cols %}<th>{{ c.replace('_', ' ').title() }}</th>{% endfor %}</tr>
+            </thead>
+            <tbody>
+              {% for row in athletes %}
+                <tr class="{{ 'rank-' ~ row['rank'] if 'rank' in row and row['rank'] in [1,2,3] else '' }}">
+                  {% for c in athlete_cols %}
+                    {% if c == 'rank' %}{{ rank_cell(row[c]) }}
+                    {% else %}<td>{{ row[c] }}</td>{% endif %}
+                  {% endfor %}
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}<p class="empty">No athlete data.</p>{% endif %}
+    </section>
+  {% endif %}
+{% endblock %}
