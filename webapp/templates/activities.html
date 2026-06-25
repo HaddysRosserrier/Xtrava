@@ -56,7 +56,48 @@
         {% endfor %}
       </select>
       <noscript><button type="submit">Show</button></noscript>
+      {% if day_iso %}
+        <button type="button" class="scrape-day-btn" id="scrape-day-btn"
+                data-date="{{ day_iso }}" {{ 'disabled' if not day_scrapeable else '' }}
+                title="{{ 'Scrape this day\'s activities from Strava (opens a browser, slow)' if day_scrapeable else 'Scraping is only available for today and the past ' ~ scrape_max_age ~ ' days' }}"
+                aria-label="Scrape this day from Strava">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+        </button>
+      {% endif %}
     </form>
+
+    {% if day_iso and day_scrapeable %}
+      <script>
+        // Scrape the selected day's activities from Strava, then reload to show
+        // the refreshed data (keeps the current week/day in the URL).
+        (function () {
+          var btn = document.getElementById('scrape-day-btn');
+          if (!btn) { return; }
+          btn.addEventListener('click', function () {
+            btn.disabled = true;
+            btn.classList.add('is-busy');
+            fetch('{{ url_for("scrape_day") }}', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ date: btn.dataset.date })
+            }).then(function (r) {
+              return r.json().then(function (body) {
+                if (!r.ok || !body.ok) { throw new Error(body.error || 'scrape failed'); }
+                location.reload();
+              });
+            }).catch(function (err) {
+              alert('Could not scrape this day — ' + err.message);
+              btn.disabled = false;
+              btn.classList.remove('is-busy');
+            });
+          });
+        })();
+      </script>
+    {% endif %}
 
     {% if groups %}
       <div class="tabs" role="tablist">
@@ -88,13 +129,19 @@
                                  aria-label="Mark activity as verified">
                         </td>
                       {% elif c == 'valid' %}
-                        {% set label = {'green': 'Valid', 'yellow': 'Grey area', 'red': 'Flagged'}[row[c]] %}
+                        {# A verified activity shows green regardless of its flag
+                           colour; data-natural keeps the flag colour so unchecking
+                           can revert it. #}
+                        {% set natural = row[c] %}
+                        {% set shown = 'green' if row.get('audit') else natural %}
+                        {% set label = {'green': 'Valid', 'yellow': 'Grey area', 'red': 'Flagged'}[shown] %}
+                        {% set label = 'Verified' if row.get('audit') else label %}
                         <td class="signal">
                           {% if row['activity_url'] %}
                             <a href="{{ row['activity_url'] }}" target="_blank" rel="noopener"
-                               title="{{ label }} — open activity"><span class="dot {{ row[c] }}"></span></a>
+                               title="{{ label }} — open activity"><span class="dot {{ shown }}" data-natural="{{ natural }}"></span></a>
                           {% else %}
-                            <span class="dot {{ row[c] }}" title="{{ label }}"></span>
+                            <span class="dot {{ shown }}" data-natural="{{ natural }}" title="{{ label }}"></span>
                           {% endif %}
                         </td>
                       {% elif c == 'auto_audit' %}
@@ -208,6 +255,22 @@
         });
 
         // Persist auditor "Verified" ticks to the audit workbook, keyed by URL.
+        // Recolor a row's flag dot to match its verified state: verified -> green,
+        // unverified -> back to the natural (flag-based) colour in data-natural.
+        var DOT_LABELS = { green: 'Valid', yellow: 'Grey area', red: 'Flagged' };
+        function reflectVerified(box) {
+          var row = box.closest('tr');
+          var dot = row ? row.querySelector('.dot') : null;
+          if (!dot) { return; }
+          var natural = dot.dataset.natural || 'green';
+          var color = box.checked ? 'green' : natural;
+          dot.classList.remove('green', 'yellow', 'red');
+          dot.classList.add(color);
+          var label = box.checked ? 'Verified' : DOT_LABELS[natural];
+          var host = dot.closest('a') || dot;
+          host.setAttribute('title', host.tagName === 'A' ? label + ' — open activity' : label);
+        }
+
         document.querySelectorAll('.audit-box').forEach(function (box) {
           box.addEventListener('change', function () {
             box.disabled = true;
@@ -217,6 +280,7 @@
               body: JSON.stringify({ activity_url: box.dataset.url, verified: box.checked })
             }).then(function (r) {
               if (!r.ok) { throw new Error('save failed'); }
+              reflectVerified(box);  // only recolor once the save succeeded
             }).catch(function () {
               box.checked = !box.checked;  // revert on failure
               alert('Could not save verification — please try again.');

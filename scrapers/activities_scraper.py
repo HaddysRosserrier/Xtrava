@@ -110,20 +110,35 @@ def _entry_activities(entry, now: date) -> list[dict]:
     activity_dt = _parse_feed_datetime(date_text, now) if date_text else None
     time_visible = bool(FEED_TIME_RE.search(date_text.lower()))
 
-    name_el = entry.query_selector("[data-testid='owners-name']")
-    raw_name = _text(name_el)
-    clean_name, team = _extract_team(raw_name)
+    # One entry can hold several activities from *different* athletes (a workout
+    # done "with other athletes" groups them into one card). Pairing every
+    # activity with the entry's first owners-name mislabels the rest, so walk the
+    # card in document order instead: each owners-name applies to the activities
+    # that follow it, and each activity-icon to the next activity link.
+    nodes = entry.query_selector_all(
+        "[data-testid='owners-name'], "
+        "[data-testid='activity-icon'], "
+        "[data-testid='activity_name']"
+    )
 
-    # One entry can hold several activities (grouped post); pair each activity
-    # link with the type icon at the same index.
-    links = entry.query_selector_all("[data-testid='activity_name']")
-    icons = entry.query_selector_all("[data-testid='activity-icon']")
+    raw_name = clean_name = team = ""
+    pending_icon = None
     out: list[dict] = []
-    for i, link in enumerate(links):
-        match = ACTIVITY_HREF_RE.search(link.get_attribute("href") or "")
+    for node in nodes:
+        testid = node.get_attribute("data-testid")
+        if testid == "owners-name":
+            raw_name = _text(node)
+            clean_name, team = _extract_team(raw_name)
+            continue
+        if testid == "activity-icon":
+            pending_icon = node
+            continue
+
+        # activity_name
+        match = ACTIVITY_HREF_RE.search(node.get_attribute("href") or "")
+        icon, pending_icon = pending_icon, None
         if not match:
             continue
-        icon = icons[i] if i < len(icons) else None
         out.append({
             "name": clean_name,
             "team": team,

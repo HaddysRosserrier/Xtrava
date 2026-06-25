@@ -634,6 +634,25 @@ html[data-theme="dark"] .cov-over { background: #0c2a3a; color: #38bdf8; }
   cursor: pointer;
 }
 
+.scrape-day-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--orange);
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: background .15s, border-color .15s;
+}
+
+.scrape-day-btn svg { width: 17px; height: 17px; }
+.scrape-day-btn:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--orange); }
+.scrape-day-btn:disabled { cursor: default; opacity: .45; color: var(--muted); }
+.scrape-day-btn.is-busy { animation: spin .8s linear infinite; pointer-events: none; }
+
 .empty { color: var(--muted); }
 
 code {

@@ -9,7 +9,6 @@ Run with:  python -m webapp.app   (from the project root)
 from __future__ import annotations
 
 import hmac
-import math
 import os
 import threading
 from datetime import datetime, date
@@ -72,7 +71,7 @@ TEAM_HEADERS = {
     "total_elev_gain_m": "Elev Gain M",
     "total_time": "Time",
     "athlete_count": "Athletes",
-    "consistency": "Consistency",
+    "kinematic_gain": "Kinematic Gain",
 }
 
 # Team-standings columns whose top value across teams gets highlighted.
@@ -162,6 +161,11 @@ def _record_deleted(row: dict, when: str) -> None:
 # The four visibility flags that decide an activity's "Valid" traffic light.
 VALID_FLAGS = ["is_map_visible", "is_heart_rate_visible", "is_pace_visible", "is_cadence_visible"]
 
+# A day's activities can only be (re-)scraped while it's still in Strava's recent
+# feed. Older days have scrolled off, so the per-day scrape button is limited to
+# today and the previous SCRAPE_MAX_AGE_DAYS days.
+SCRAPE_MAX_AGE_DAYS = 2
+
 app = Flask(__name__)
 
 
@@ -245,52 +249,43 @@ def _week_path(prefix: str, week: str | None) -> Path | None:
     return path if path.exists() else None
 
 
-# Consistency scores come out as small fractions, so we scale by this factor to
-# keep the displayed values readable.
-CONSISTENCY_SCALE = 1000
-
-
-def _consistency(distance_km, activities, minutes) -> float:
-    """Consistency score: Distance * ln(activities + 1) / (min * (activities + 1)),
-    scaled by CONSISTENCY_SCALE to avoid tiny fractions.
-
-    Rewards covering distance across more, time-efficient activities. Returns 0.0
-    when there's no active time (minutes == 0) to avoid dividing by zero; with zero
-    activities the numerator's ln(1) is already 0.
+def _consistency(distance_km, minutes) -> float:
+    """Average kilometric speed: distance squared over time (km²/min) — i.e.
+    distance × average speed, so it rewards covering more distance in less time.
+    Returns 0.0 when there's no active time (minutes == 0) to avoid dividing by zero.
     """
     distance = float(distance_km or 0)
-    activities = int(activities or 0)
     minutes = float(minutes or 0)
     if minutes <= 0:
         return 0.0
-    return round(distance * math.log(activities + 1) / (minutes * (activities + 1)) * CONSISTENCY_SCALE, 2)
+    return round(distance ** 2 / minutes, 2)
 
 
-def _add_consistency(df: pd.DataFrame, distance_col: str, activities_col: str, time_col: str) -> None:
-    """Append a `consistency` column computed per row, in place. No-op if any of
-    the source columns are missing. `time_col` holds an 'Xh Ym' string."""
-    if not {distance_col, activities_col, time_col} <= set(df.columns):
+def _add_consistency(df: pd.DataFrame, distance_col: str, time_col: str) -> None:
+    """Append a `kinematic_gain` column computed per row, in place. No-op if either
+    source column is missing. `time_col` holds an 'Xh Ym' string."""
+    if not {distance_col, time_col} <= set(df.columns):
         return
-    df["consistency"] = [
-        _consistency(d, a, parse_time_minutes(str(t)))
-        for d, a, t in zip(df[distance_col], df[activities_col], df[time_col])
+    df["kinematic_gain"] = [
+        _consistency(d, parse_time_minutes(str(t)))
+        for d, t in zip(df[distance_col], df[time_col])
     ]
 
 
 def _add_team_consistency(teams: pd.DataFrame, athletes: pd.DataFrame) -> None:
-    """Append each team's `consistency` as the sum of its athletes' consistency
-    scores, in place. Teams are matched to athletes by case-insensitive team name
-    (the Teams sheet title-cases the name, the athlete sheet keeps the raw value).
-    No-op if athlete consistency hasn't been computed or the team key is missing."""
-    if "consistency" not in athletes.columns or "team" not in athletes.columns:
+    """Append each team's `kinematic_gain` as the sum of its athletes' scores, in
+    place. Teams are matched to athletes by case-insensitive team name (the Teams
+    sheet title-cases the name, the athlete sheet keeps the raw value). No-op if
+    athlete kinematic_gain hasn't been computed or the team key is missing."""
+    if "kinematic_gain" not in athletes.columns or "team" not in athletes.columns:
         return
     if "team" not in teams.columns:
         return
     sums = (
         athletes.assign(_k=athletes["team"].astype(str).str.strip().str.casefold())
-        .groupby("_k")["consistency"].sum()
+        .groupby("_k")["kinematic_gain"].sum()
     )
-    teams["consistency"] = (
+    teams["kinematic_gain"] = (
         teams["team"].astype(str).str.strip().str.casefold().map(sums).fillna(0.0).round(2)
     )
 
@@ -416,7 +411,7 @@ def dashboard():
     teams = teams.drop(columns=["members"], errors="ignore")
     athletes = _read_sheet(path, "This Week - Athletes")
 
-    _add_consistency(athletes, "distance_km", "activities", "time")
+    _add_consistency(athletes, "distance_km", "time")
     _add_team_consistency(teams, athletes)
 
     team_records = _records(teams)
@@ -490,6 +485,33 @@ def refresh_leaderboard():
     except Exception as exc:  # noqa: BLE001 — surface any scrape failure to the UI
         return jsonify({"ok": False, "error": f"refresh failed: {exc}"}), 502
     return jsonify({"ok": True})
+
+
+@app.route("/scrape-day", methods=["POST"])
+@_scrape_endpoint
+def scrape_day():
+    """Scrape one day's club activities from Strava's recent feed and save them to
+    that day's sheet. Limited to the past SCRAPE_MAX_AGE_DAYS days, since older days
+    have scrolled out of the feed. Opens a browser (slow)."""
+    data = request.get_json(silent=True) or {}
+    try:
+        target = date.fromisoformat(str(data.get("date", "")).strip())
+    except ValueError:
+        return jsonify({"ok": False, "error": "bad or missing date"}), 400
+
+    age = (date.today() - target).days
+    if not 0 <= age <= SCRAPE_MAX_AGE_DAYS:
+        return jsonify({
+            "ok": False,
+            "error": f"can only scrape today and the past {SCRAPE_MAX_AGE_DAYS} days",
+        }), 400
+
+    try:
+        from main import run_activities
+        run_activities(target)
+    except Exception as exc:  # noqa: BLE001 — surface any scrape failure to the UI
+        return jsonify({"ok": False, "error": f"scrape failed: {exc}"}), 502
+    return jsonify({"ok": True, "date": target.isoformat()})
 
 
 @app.route("/activities")
@@ -566,12 +588,26 @@ def activities():
     elif not df.empty:
         groups.append({"name": "All", "rows": _records(df)})
 
+    # The per-day scrape button: derive the selected day's ISO date (the trailing
+    # token of a "Mon 2026-06-15" sheet name) and whether it's recent enough to
+    # still be in Strava's feed.
+    day_iso = day.split()[-1] if day else None
+    day_scrapeable = False
+    if day_iso:
+        try:
+            day_scrapeable = 0 <= (date.today() - date.fromisoformat(day_iso)).days <= SCRAPE_MAX_AGE_DAYS
+        except ValueError:
+            day_iso = None
+
     return render_template(
         "activities.html",
         week=week,
         weeks=weeks,
         days=days,
         day=day,
+        day_iso=day_iso,
+        day_scrapeable=day_scrapeable,
+        scrape_max_age=SCRAPE_MAX_AGE_DAYS,
         coverage=coverage,
         columns=columns,
         headers=ACTIVITY_HEADERS,
